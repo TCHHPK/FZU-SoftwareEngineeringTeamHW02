@@ -1,0 +1,707 @@
+天生一队
+
+数据库设计说明书
+
+学术课件智能整理与复习 Agent
+
+本说明书规定课程资料、结构化笔记、知识点以及学习交互数据的组织、存取与维护方式，为后端实现、实体映射和数据库验收提供依据。核心数据链为课件、原文块和知识点，复习、自测、错题与导图通过知识点及原文引用关联。
+
+| 项目 | 内容 |
+| --- | --- |
+| 文档编号 | TSYD DB 002 |
+| 文档版本 | V1.2 |
+| 编制日期 | 2026年11月7日 |
+| 编制人 | 章玲 |
+| 数据库设计来源 | 吴雅晴 V1.1 数据库交付包 2026年11月6日 |
+| 设计数据库 | course_agent  MySQL 8.0.16及以上 |
+| 用途 | 第二次团队作业数据库设计说明书 |
+| 状态 | 概要设计评审稿，建库与联调待验证 |
+
+本次整理保留同学的表名和字段设计，补充正式说明书结构、关系模型和对象关系映射。记忆卡片属于待确认扩展；多材料合并不属于当前表结构已实现能力。
+
+# 1 引言
+
+## 1.1 标识与使用范围
+
+开发方为天生一队，服务对象为使用课件进行学习和复习的理工科学生。数据库供后端服务、资料解析与智能体任务、复习与自测服务共同使用。本文面向开发、测试和课程评审人员。原始文件和图片保存在文件或对象存储中，关系库保存元数据、文本、引用和结果。
+
+## 1.2 引用文件
+
+R1 第二次团队作业 原型设计与概要设计 PDF。R2 吴雅晴交付第二版中的数据库设计说明书、schema.sql、er_diagram.png、er_diagram2.png和分工介绍。R3 GB/T 8567-2006 计算机软件文档编制规范，作为文档编制参考。
+
+国家标准信息入口：https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=84C42B6277D2714B7176B10C6E6B1A44
+
+## 1.3 术语与缩写
+
+| 术语 | 定义 |
+| --- | --- |
+| Agent | 智能体，按任务调用模型、知识检索或工具的程序 |
+| ER | Entity Relationship，实体关系模型 |
+| ORM | Object Relational Mapping，对象关系映射 |
+| SQL / DDL | Structured Query Language，结构化查询语言；Data Definition Language，数据定义语言 |
+| JSON | JavaScript Object Notation，结构化数据交换格式 |
+| UTC | Coordinated Universal Time，协调世界时 |
+| CTE | Common Table Expression，公用表表达式 |
+| SM-2 / EF | SuperMemo 2间隔复习算法；Ease Factor，复习难度因子 |
+| bcrypt | 用于口令摘要计算的算法 |
+| LaTeX / Markdown | 公式排版语法与轻量文本标记格式 |
+
+## 1.4 修订记录
+
+| 版本 | 编制者 | 内容 |
+| --- | --- | --- |
+| V1.1 | 吴雅晴 | 提供13表设计、视图、评分过程、示例和ER图 |
+| V1.2 | 章玲 | 整理提交稿；补充关系模型、ORM、约束边界和验收项；保留原SQL不变 |
+
+# 2 数据库级设计决策
+
+## 2.1 业务范围与数据流
+
+上传课件后记录元信息；解析服务生成原文块；智能体基于原文生成笔记、章节和知识点；问答记录保存问题、回答和引用块编号。用户通过知识点进入错题、自测和导图功能。卡片与复习流水作为可选扩展保留。模型调用失败时不得发布半套结果，生成完成后统一写入并切换可见状态。
+
+| 存储位置 | 数据 | 管理方式 |
+| --- | --- | --- |
+| MySQL关系库 | 用户、课件元信息、原文块、知识点、笔记、交互与学习结果 | 外键、索引、事务和服务层归属校验 |
+| 文件或对象存储 | 上传文件、图表截图 | storage_path或image_path引用；鉴权后访问 |
+| 可选向量检索组件 | 原文块的检索向量 | embedding_ref回链；命中后回库验证课件归属 |
+
+## 2.2 运行约定
+
+采用MySQL 8.0.16及以上、InnoDB存储引擎、utf8mb4字符集和utf8mb4_0900_ai_ci排序规则。原文中文全文检索使用ngram解析器。所有连接设置UTC时区，DATETIME按UTC约定写入，界面按北京时间显示。用户标识必须来自登录上下文，不接受客户端直接指定他人user_id。
+
+## 2.3 范围与待确认决策
+
+本版按同学交付包的13表描述。flashcard、review_log和扩展薄弱度视图须经团队确认后启用。当前每份笔记来源于单份课件；尚无多材料整理任务及材料关联表，不能宣称支持多份材料合并。数据库选型沿用交付包的MySQL方案，需与后端最终技术栈核对。
+
+本版描述数据库层设计，不宣称已有数据库已上线、接口已实现或性能已实测。未在现有结构中单独保存任务执行日志、模型配置和提示词版本，如后续要求任务审计，应通过变更评审扩展。
+
+# 3 概念设计
+
+## 3.1 数据主干 ER 图
+
+![ER图](er_diagram.png)
+
+图1 继承吴雅晴交付包的数据主干图。图中连线用于展示主要业务关系；完整外键及删除动作以第4章按SQL整理的约束为准。
+
+# 3 概念设计
+
+## 3.2 学习闭环 ER 图
+
+![ER图](er_diagram2.png)
+
+图2 继承吴雅晴交付包的学习闭环图。卡片及复习流水为待确认扩展。知识点与出处允许为空时，界面应显示依据缺失，不能承诺所有记录都能跳转原文。
+
+# 4 关系数据模型与完整性
+
+每张表以id为主键，单个实体对应独立数据表；1对多关系由多端保存外键。以下关系签名标识主要字段，全部字段与约束见第5章。PK表示主键，FK表示外键。
+
+sys_user（id PK，其余属性见数据字典）
+
+courseware（id PK, user_id FK，其余属性见数据字典）
+
+courseware_chunk（id PK, courseware_id FK，其余属性见数据字典）
+
+note（id PK, courseware_id FK, user_id FK, version，其余属性见数据字典）
+
+note_section（id PK, note_id FK, parent_id FK，其余属性见数据字典）
+
+knowledge_point（id PK, courseware_id FK, note_id FK, source_chunk_id FK, note_version, kp_code，其余属性见数据字典）
+
+qa_record（id PK, user_id FK, courseware_id FK，其余属性见数据字典）
+
+flashcard（id PK, user_id FK, knowledge_point_id FK, courseware_id FK, source_chunk_id FK, note_version，其余属性见数据字典）
+
+review_log（id PK, card_id FK, user_id FK，其余属性见数据字典）
+
+wrong_question（id PK, user_id FK, knowledge_point_id FK, courseware_id FK, source_chunk_id FK, note_version, source_type, source_id，其余属性见数据字典）
+
+self_test（id PK, user_id FK, courseware_id FK，其余属性见数据字典）
+
+self_test_item（id PK, test_id FK, knowledge_point_id FK, source_chunk_id FK, seq_no, note_version，其余属性见数据字典）
+
+mindmap_node（id PK, courseware_id FK, user_id FK, parent_id FK, knowledge_point_id FK, source_chunk_id FK, note_version，其余属性见数据字典）
+
+## 4.1 关系基数与规范化
+
+用户与课件、课件与原文块、笔记与章节、自测与题目、卡片与复习流水均为1对多；章节与导图节点使用可空parent_id表示父子关系。可空外键表示子记录可暂不关联主体。qa_record引用块数组及wrong_question多态来源不受普通外键约束，由服务层验证。
+
+账号、材料、知识组织与学习流水分离，减少重复更新。source_page、courseware_id、note_version等为追溯和查询保留的冗余信息，须在同一写事务内从关联记录复制。JSON仅用于选项、组卷范围和引用编号集合，不替代需要逐项修改、评分和检索的题目表。
+
+## 4.2 超出外键能力的校验
+
+必须校验知识点、原文块、课件和用户属于同一数据范围；父节点属于同一笔记或同一课件版本。外键只能证明编号存在，不能证明归属一致。写入前拒绝自指与祖先环；递归查询的深度上限仅限流，不能替代防环。字符区间采用左闭右开，基于同一份规范化页文本计算，页码从1开始。
+
+# 5 数据字典
+
+## 5.1 用户表
+
+物理表名 sys_user
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 用户主键 |
+| username | VARCHAR(50) | 非空 | 登录名，全局唯一 |
+| password_hash | VARCHAR(100) | 非空 | bcrypt 摘要，不存明文 |
+| nickname | VARCHAR(50) | 非空 | 显示昵称；默认 '' |
+| email | VARCHAR(120) | 可空 | 邮箱，可空；用于找回密码；默认 NULL |
+| status | TINYINT | 非空 | 1 正常，0 禁用；默认 1 |
+| last_login_at | DATETIME | 可空 | 最近登录时间；默认 NULL |
+| created_at | DATETIME | 非空 | 注册时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+唯一索引 uk_username (username)
+
+唯一索引 uk_email (email)
+
+# 5 数据字典
+
+## 5.2 课件表
+
+物理表名 courseware
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 课件主键 |
+| user_id | BIGINT UNSIGNED | 非空 | 上传者，归属校验的第一道条件 |
+| title | VARCHAR(200) | 非空 | 课件标题，默认取文件名去扩展名 |
+| course_name | VARCHAR(100) | 可空 | 课程名，如“机器学习”，可空；默认 NULL |
+| file_name | VARCHAR(255) | 非空 | 原始文件名 |
+| file_type | VARCHAR(16) | 非空 | pptx / pdf / docx 等 |
+| file_size | BIGINT UNSIGNED | 非空 | 字节数；默认 0 |
+| storage_path | VARCHAR(500) | 非空 | 对象存储相对路径，不存公网 URL |
+| page_count | INT UNSIGNED | 非空 | 页数，解析后回填；默认 0 |
+| parse_status | TINYINT | 非空 | 0 待解析 1 解析中 2 成功 3 失败；默认 0 |
+| parse_error | VARCHAR(500) | 可空 | 失败原因摘要；默认 NULL |
+| uploaded_at | DATETIME | 非空 | 上传时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+| deleted_at | DATETIME | 可空 | 软删除时间；NULL 表示未删除；默认 NULL |
+
+索引与引用约束
+
+索引 idx_user_deleted (user_id, deleted_at)
+
+索引 idx_parse_status (parse_status)
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+# 5 数据字典
+
+## 5.3 课件原文块表
+
+物理表名 courseware_chunk
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 原文块主键，即“出处 ID” |
+| courseware_id | BIGINT UNSIGNED | 非空 | 所属课件 |
+| page_no | INT UNSIGNED | 非空 | 页码，从 1 开始 |
+| chunk_index | INT UNSIGNED | 非空 | 页内序号，从 1 开始 |
+| content_type | TINYINT | 非空 | 1 文本 2 公式 3 表格 4 图注 5 代码；默认 1 |
+| content | MEDIUMTEXT | 非空 | 纯文本内容；公式块存 LaTeX 源码的可读形式 |
+| latex | TEXT | 可空 | 公式块的 LaTeX 源码，非公式块为 NULL；默认 NULL |
+| image_path | VARCHAR(500) | 可空 | 图注/表格截图路径，可空；默认 NULL |
+| char_start | INT UNSIGNED | 非空 | 在整页文本中的起始字符偏移；默认 0 |
+| char_end | INT UNSIGNED | 非空 | 结束偏移（左闭右开）；默认 0 |
+| token_count | INT UNSIGNED | 可空 | 切块 token 数，供上下文窗口预算；默认 NULL |
+| embedding_ref | VARCHAR(100) | 可空 | 向量库主键，向量本身不落 MySQL；默认 NULL |
+| created_at | DATETIME | 非空 | 入库时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+唯一索引 uk_course_page_chunk (courseware_id, page_no, chunk_index)
+
+全文索引 ft_chunk_content (content) WITH PARSER ngram
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+# 5 数据字典
+
+## 5.4 结构化笔记表
+
+物理表名 note
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 笔记主键 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 来源课件 |
+| user_id | BIGINT UNSIGNED | 非空 | 所有者 |
+| title | VARCHAR(200) | 非空 | 笔记标题 |
+| summary | TEXT | 可空 | 全文摘要；默认 NULL |
+| status | TINYINT | 非空 | 0 草稿 1 已发布；默认 1 |
+| version | INT UNSIGNED | 非空 | 重新整理时递增，旧版本保留；默认 1 |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_course_version (courseware_id, version)
+
+索引 idx_user_updated (user_id, updated_at)
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+同一课件版本号需由服务层串行分配；现有idx_course_version不是唯一索引，数据库尚不能阻止重复版本。
+
+# 5 数据字典
+
+## 5.5 笔记章节表
+
+物理表名 note_section
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 章节主键 |
+| note_id | BIGINT UNSIGNED | 非空 | 所属笔记 |
+| parent_id | BIGINT UNSIGNED | 可空 | 父章节；顶层为 NULL；默认 NULL |
+| heading | VARCHAR(200) | 非空 | 章节标题 |
+| level | TINYINT | 非空 | 层级 1—4 |
+| content_md | MEDIUMTEXT | 非空 | Markdown 正文 |
+| order_no | INT | 非空 | 同级排序号 |
+| page_from | INT UNSIGNED | 可空 | 对应起始页；默认 NULL |
+| page_to | INT UNSIGNED | 可空 | 对应结束页；默认 NULL |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_note_order (note_id, order_no)
+
+外键 (note_id) → note (id) 删除动作 CASCADE
+
+外键 (parent_id) → note_section (id) 删除动作 CASCADE
+
+# 5 数据字典
+
+## 5.6 知识点表
+
+物理表名 knowledge_point
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 知识点主键 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 所属课件（知识点的作用域） |
+| note_id | BIGINT UNSIGNED | 可空 | 生成它的笔记，可空；默认 NULL |
+| note_version | INT UNSIGNED | 非空 | 所属笔记版本；重新整理时递增，版本内的知识点独立成行；默认 1 |
+| source_chunk_id | BIGINT UNSIGNED | 可空 | 主要出处原文块，可空；默认 NULL |
+| kp_code | VARCHAR(50) | 非空 | 业务编码，如 KP-7-2-1 |
+| chapter | VARCHAR(100) | 可空 | 章节名，薄弱点按它聚合；默认 NULL |
+| title | VARCHAR(200) | 非空 | 知识点名称 |
+| summary | TEXT | 可空 | 一句话解释，可直接做卡片背面；默认 NULL |
+| difficulty | TINYINT | 非空 | 难度 1—5，供组卷配比；默认 3 |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+唯一索引 uk_course_kpcode (courseware_id, note_version, kp_code)
+
+索引 idx_course_chapter (courseware_id, chapter)
+
+索引 idx_source_chunk (source_chunk_id)
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+外键 (note_id) → note (id) 删除动作 SET NULL
+
+外键 (source_chunk_id) → courseware_chunk (id) 删除动作 SET NULL
+
+# 5 数据字典
+
+## 5.7 AI 问答记录表
+
+物理表名 qa_record
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 问答主键 |
+| user_id | BIGINT UNSIGNED | 非空 | 提问者 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 限定课件范围 |
+| question | TEXT | 非空 | 用户问题 |
+| answer | MEDIUMTEXT | 非空 | 带引用的回答 |
+| cited_chunk_ids | JSON | 非空 | 引用块 ID 数组，如 [12,15] |
+| confidence | DECIMAL(4,3) | 可空 | 置信度 0—1，可空；默认 NULL |
+| created_at | DATETIME | 非空 | 提问时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_user_time (user_id, created_at)
+
+索引 idx_course_time (courseware_id, created_at)
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+# 5 数据字典
+
+## 5.8 记忆卡片表
+
+物理表名 flashcard
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 卡片主键 |
+| user_id | BIGINT UNSIGNED | 非空 | 卡片所有者 |
+| knowledge_point_id | BIGINT UNSIGNED | 非空 | 关联知识点 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 冗余课件 ID，支持按课件筛卡 |
+| note_version | INT UNSIGNED | 非空 | 建卡时的笔记版本快照，与 knowledge_point.note_version 一致；默认 1 |
+| card_type | TINYINT | 非空 | 1 问答卡 2 填空卡 |
+| front | TEXT | 非空 | 正面：问题或挖空句 |
+| back | TEXT | 非空 | 背面：答案 |
+| source_chunk_id | BIGINT UNSIGNED | 可空 | 出处原文块，可空；默认 NULL |
+| source_page | INT UNSIGNED | 可空 | 出处页码，展示用冗余；默认 NULL |
+| state | TINYINT | 非空 | 0 新卡 1 学习中 2 复习中 3 暂停；默认 0 |
+| ease_factor | DECIMAL(4,2) | 非空 | SM-2 难度因子 EF，1.30—5.00；默认 2.50 |
+| interval_days | INT UNSIGNED | 非空 | 当前复习间隔（天）；默认 0 |
+| repetitions | INT UNSIGNED | 非空 | 连续答对次数；默认 0 |
+| lapses | INT UNSIGNED | 非空 | 遗忘次数，薄弱度输入之一；默认 0 |
+| due_at | DATETIME | 非空 | 下次到期时间，今日待复习的排序键；默认 CURRENT_TIMESTAMP |
+| last_reviewed_at | DATETIME | 可空 | 最近复习时间；默认 NULL |
+| origin | TINYINT | 非空 | 1 笔记生成 2 错题生成 3 手动新建；默认 1 |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+| deleted_at | DATETIME | 可空 | 软删除时间；默认 NULL |
+
+索引与引用约束
+
+唯一索引 uk_user_kp_type (user_id, knowledge_point_id, card_type)
+
+索引 idx_user_due (user_id, state, due_at)
+
+索引 idx_kp (knowledge_point_id)
+
+索引 idx_courseware (courseware_id)
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+外键 (knowledge_point_id) → knowledge_point (id) 删除动作 CASCADE
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+外键 (source_chunk_id) → courseware_chunk (id) 删除动作 SET NULL
+
+CONSTRAINT ck_card_ease CHECK (ease_factor BETWEEN 1.30 AND 5.00)
+
+# 5 数据字典
+
+## 5.9 复习记录表
+
+物理表名 review_log
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 记录主键 |
+| card_id | BIGINT UNSIGNED | 非空 | 被评分的卡片 |
+| user_id | BIGINT UNSIGNED | 非空 | 复习者 |
+| rating | TINYINT | 非空 | 1 忘记 2 困难 3 一般 4 熟练 |
+| prev_interval_days | INT UNSIGNED | 非空 | 评分前间隔；默认 0 |
+| next_interval_days | INT UNSIGNED | 非空 | 评分后间隔；默认 0 |
+| prev_ease | DECIMAL(4,2) | 非空 | 评分前 EF；默认 2.50 |
+| next_ease | DECIMAL(4,2) | 非空 | 评分后 EF；默认 2.50 |
+| duration_ms | INT UNSIGNED | 可空 | 停留毫秒，可空；默认 NULL |
+| reviewed_at | DATETIME | 非空 | 复习时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_card_time (card_id, reviewed_at)
+
+索引 idx_user_time (user_id, reviewed_at)
+
+外键 (card_id) → flashcard (id) 删除动作 CASCADE
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+CONSTRAINT ck_log_rating CHECK (rating BETWEEN 1 AND 4)
+
+# 5 数据字典
+
+## 5.10 错题表
+
+物理表名 wrong_question
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 错题主键 |
+| user_id | BIGINT UNSIGNED | 非空 | 所有者 |
+| knowledge_point_id | BIGINT UNSIGNED | 可空 | 关联知识点，可空；默认 NULL |
+| courseware_id | BIGINT UNSIGNED | 可空 | 所属课件；课件删除后置空，保留错题历史；默认 NULL |
+| note_version | INT UNSIGNED | 非空 | 收录时的笔记版本快照；默认 1 |
+| source_type | TINYINT | 非空 | 1 AI 问答 2 自测 3 手动 |
+| source_id | BIGINT UNSIGNED | 可空 | 来源记录 ID，手动录入为 NULL；默认 NULL |
+| question_type | TINYINT | 可空 | 1 单选 2 多选 3 填空 4 简答 5 问答；默认 NULL |
+| stem | TEXT | 非空 | 题干 |
+| user_answer | TEXT | 可空 | 当时的错误答案；默认 NULL |
+| correct_answer | TEXT | 非空 | 正确答案 |
+| analysis | MEDIUMTEXT | 可空 | 解析；默认 NULL |
+| source_chunk_id | BIGINT UNSIGNED | 可空 | 出处原文块，可空；默认 NULL |
+| source_page | INT UNSIGNED | 可空 | 出处页码；默认 NULL |
+| wrong_count | INT UNSIGNED | 非空 | 累计答错次数；默认 1 |
+| status | TINYINT | 非空 | 0 未掌握 1 复习中 2 已掌握；默认 0 |
+| last_wrong_at | DATETIME | 非空 | 最近答错时间；默认 CURRENT_TIMESTAMP |
+| mastered_at | DATETIME | 可空 | 标记掌握时间；默认 NULL |
+| created_at | DATETIME | 非空 | 收录时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+唯一索引 uk_user_source (user_id, source_type, source_id)
+
+索引 idx_user_status (user_id, status, last_wrong_at)
+
+索引 idx_kp (knowledge_point_id)
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+外键 (knowledge_point_id) → knowledge_point (id) 删除动作 SET NULL
+
+外键 (courseware_id) → courseware (id) 删除动作 SET NULL
+
+外键 (source_chunk_id) → courseware_chunk (id) 删除动作 SET NULL
+
+source_type决定source_id引用qa_record或self_test_item，手动记录允许NULL；NULL不会触发唯一键去重。原始问答被删除后来源可能失效，但错题题干和答案快照保留。
+
+# 5 数据字典
+
+## 5.11 自测表
+
+物理表名 self_test
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 自测主键 |
+| user_id | BIGINT UNSIGNED | 非空 | 作答者 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 所属课件 |
+| title | VARCHAR(200) | 非空 | 试卷标题 |
+| scope | JSON | 非空 | 组卷范围，如 {"chapter":"第7章","kp_ids":[1,2]} |
+| question_types | JSON | 非空 | 题型数组，如 [1,3] |
+| question_count | SMALLINT | 非空 | 题目数；默认 0 |
+| total_score | DECIMAL(6,2) | 非空 | 总分；默认 100.00 |
+| score | DECIMAL(6,2) | 可空 | 得分，未批改为 NULL；默认 NULL |
+| correct_count | SMALLINT | 可空 | 答对题数；默认 NULL |
+| status | TINYINT | 非空 | 0 生成中 1 待作答 2 已交卷 3 批改完成 4 生成失败；默认 0 |
+| started_at | DATETIME | 可空 | 开始作答时间；默认 NULL |
+| submitted_at | DATETIME | 可空 | 交卷时间；默认 NULL |
+| duration_sec | INT UNSIGNED | 可空 | 作答耗时（秒）；默认 NULL |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_user_time (user_id, created_at)
+
+索引 idx_courseware (courseware_id)
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+# 5 数据字典
+
+## 5.12 自测题目表
+
+物理表名 self_test_item
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 题目主键 |
+| test_id | BIGINT UNSIGNED | 非空 | 所属自测 |
+| seq_no | SMALLINT | 非空 | 卷内题号 |
+| question_type | TINYINT | 非空 | 1 单选 2 多选 3 填空 4 简答 |
+| knowledge_point_id | BIGINT UNSIGNED | 可空 | 考查知识点，可空；默认 NULL |
+| note_version | INT UNSIGNED | 非空 | 组卷时的笔记版本快照；默认 1 |
+| stem | TEXT | 非空 | 题干 |
+| options | JSON | 可空 | 选项数组，主观题/填空题为 NULL；默认 NULL |
+| correct_answer | TEXT | 非空 | 参考答案 |
+| user_answer | TEXT | 可空 | 用户作答；默认 NULL |
+| is_correct | TINYINT | 可空 | 1 正确 0 错误，未批改 NULL；默认 NULL |
+| is_backfilled | TINYINT | 非空 | 错题是否已回填：1 是 0 否；重复交卷时据此跳过；默认 0 |
+| score | DECIMAL(5,2) | 非空 | 本题得分；默认 0.00 |
+| max_score | DECIMAL(5,2) | 非空 | 本题满分；默认 0.00 |
+| analysis | MEDIUMTEXT | 可空 | 逐题解析；默认 NULL |
+| source_chunk_id | BIGINT UNSIGNED | 可空 | 出处原文块，可空；默认 NULL |
+| source_page | INT UNSIGNED | 可空 | 出处页码；默认 NULL |
+| answered_at | DATETIME | 可空 | 作答时间；默认 NULL |
+| created_at | DATETIME | 非空 | 生成时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+唯一索引 uk_test_seq (test_id, seq_no)
+
+索引 idx_kp (knowledge_point_id)
+
+外键 (test_id) → self_test (id) 删除动作 CASCADE
+
+外键 (knowledge_point_id) → knowledge_point (id) 删除动作 SET NULL
+
+外键 (source_chunk_id) → courseware_chunk (id) 删除动作 SET NULL
+
+# 5 数据字典
+
+## 5.13 导图节点表
+
+物理表名 mindmap_node
+
+| 字段 | 类型 | 约束 | 含义与默认值 |
+| --- | --- | --- | --- |
+| id | BIGINT UNSIGNED | 非空 主键 | 节点主键 |
+| courseware_id | BIGINT UNSIGNED | 非空 | 所属课件（一张导图） |
+| note_version | INT UNSIGNED | 非空 | 生成导图时的笔记版本快照；默认 1 |
+| user_id | BIGINT UNSIGNED | 非空 | 所有者 |
+| parent_id | BIGINT UNSIGNED | 可空 | 父节点；根节点为 NULL；默认 NULL |
+| title | VARCHAR(200) | 非空 | 节点标题 |
+| node_type | TINYINT | 非空 | 1 根 2 章 3 节 4 知识点 |
+| knowledge_point_id | BIGINT UNSIGNED | 可空 | 关联知识点，可空；默认 NULL |
+| summary | TEXT | 可空 | 节点摘要，点开时展示；默认 NULL |
+| source_chunk_id | BIGINT UNSIGNED | 可空 | 出处原文块，可空；默认 NULL |
+| page_no | INT UNSIGNED | 可空 | 出处页码；默认 NULL |
+| level | TINYINT | 非空 | 层级 1—4 |
+| order_no | INT | 非空 | 同级排序号 |
+| is_collapsed | TINYINT | 非空 | 前端默认是否收起：1 是 0 否；默认 0 |
+| created_at | DATETIME | 非空 | 创建时间；默认 CURRENT_TIMESTAMP |
+| updated_at | DATETIME | 非空 | 更新时间；默认 CURRENT_TIMESTAMP |
+
+索引与引用约束
+
+索引 idx_course_parent (courseware_id, parent_id, order_no)
+
+索引 idx_kp (knowledge_point_id)
+
+外键 (courseware_id) → courseware (id) 删除动作 CASCADE
+
+外键 (user_id) → sys_user (id) 删除动作 RESTRICT
+
+外键 (parent_id) → mindmap_node (id) 删除动作 CASCADE
+
+外键 (knowledge_point_id) → knowledge_point (id) 删除动作 SET NULL
+
+外键 (source_chunk_id) → courseware_chunk (id) 删除动作 SET NULL
+
+整树查询必须同时限定courseware_id与note_version；写入时校验父节点同版本。现有索引不包含版本，需结合实际查询评估补充。
+
+# 6 对象关系映射
+
+下列为语言和框架无关的实体映射约定，不宣称已生成实体代码。实体属性使用小驼峰，数据库列使用下划线命名，如knowledgePointId对应knowledge_point_id。每个实体的全部持久化属性由第5章同名字段逐一映射。
+
+| 实体类 | 库表 | 关联属性示例 |
+| --- | --- | --- |
+| SysUser | sys_user |  |
+| Courseware | courseware | user_id |
+| CoursewareChunk | courseware_chunk | courseware_id |
+| Note | note | courseware_id, user_id |
+| NoteSection | note_section | note_id, parent_id |
+| KnowledgePoint | knowledge_point | courseware_id, note_id, source_chunk_id |
+| QaRecord | qa_record | user_id, courseware_id |
+| Flashcard | flashcard | user_id, knowledge_point_id, courseware_id, source_chunk_id |
+| ReviewLog | review_log | card_id, user_id |
+| WrongQuestion | wrong_question | user_id, knowledge_point_id, courseware_id, source_chunk_id |
+| SelfTest | self_test | user_id, courseware_id |
+| SelfTestItem | self_test_item | test_id, knowledge_point_id, source_chunk_id |
+| MindmapNode | mindmap_node | courseware_id, user_id, parent_id, knowledge_point_id, source_chunk_id |
+
+## 6.1 类型与关联映射
+
+id及外键使用64位整数表示；如使用有符号语言整数，限制实际编号不超过其正数上限。VARCHAR和TEXT映射字符串；DECIMAL映射精确十进制类型；可空列使用可空类型；DATETIME映射按UTC解释的时间类型；JSON映射列表或对象并在序列化时校验结构。避免用浮点数保存得分和EF。
+
+Courseware.user为多对一；Note.sections为一对多；SelfTest.items为一对多；NoteSection.parent和MindmapNode.parent为可空多对一自关联。集合默认按需分页或批量加载，避免逐条查询。数据库级CASCADE不等于ORM级自动删除，实体删除操作统一走服务层，避免重复级联。
+
+# 7 数据存取与事务设计
+
+## 7.1 智能体结果与版本管理
+
+解析先记录courseware状态，再生成chunk。原文块文本、页码和偏移共同构成证据；知识点和学习内容引用相应chunk。问答cited_chunk_ids中每个编号都必须经过归属验证，记录了编号不代表回答已获原文支持。生成结果发布前应核对证据和内容的一致性。
+
+重新整理保留旧note，新版本知识点独立成行；创建学习内容时显式复制note_version，不依赖默认值1。查询导图须按版本过滤。不能只改原记录version而覆盖旧内容。原始课件块在仍被使用期间保持稳定；若重新解析改变偏移，应保留旧块或通过迁移更新全部引用。
+
+## 7.2 交卷与错题回填
+
+先通过短事务把自测从待作答转为已交卷，固定作答内容；模型批改在事务外完成。批改落库时锁定自测主记录并核对所有者和状态：已完成则返回现有结果；未具备有效批改结果不得回填。逐题写入评分，按is_backfilled筛选错题，写错题快照并显式带入note_version，再更新回填标记、汇总分数和完成状态，同一事务提交。失败全部回滚。
+
+锁住同一自测主记录，使并发提交串行执行；唯一键只防重复行，不能单独防wrong_count重复累加。手动错题没有来源编号，去重须另定业务规则。问答记录仅在用户主动收录或明确的练习判错结果下进入错题，不将普通提问自动判成错误。
+
+## 7.3 可选卡片评分
+
+交付包sp_review_card能原子写入复习流水和更新卡片，但下一次间隔等参数在调用前计算，过程内部加锁无法保证这些入参基于最新状态。实现时选择一种方式：在同一事务锁定并读取卡片后计算和更新，或扩展过程引入预期版本并拒绝过期更新。不要嵌套调用一个自行开启事务的过程。
+
+四档评分是本项目对间隔复习的映射，具体调度规则由服务层确认。参数校验包括评分、EF范围、非负间隔、到期时间和暂停状态；避免重试同一请求时重复记流水，可增加幂等请求编号，需同步修改脚本。
+
+# 8 运用与物理设计
+
+## 8.1 索引与查询
+
+以主键定位原文；通过idx_user_updated查询笔记历史；idx_user_status过滤错题；uk_test_seq保证卷内题号唯一；idx_user_due支持到期卡片筛选。导图按课件、版本、父节点与排序号读取。索引效果以实际执行计划和数据量验证，不把原稿估算的毫秒值作为已测性能。
+
+默认薄弱度视图v_kp_weakness按未掌握错题的累计次数乘10并封顶100；可选扩展视图按错题次数乘8加卡片遗忘次数乘4并封顶100。这是产品排序规则，不代表经过验证的学习能力测量。查询两种视图均须限定当前user_id。
+
+## 8.2 删除与恢复
+
+日常删除课件仅设置deleted_at；所有关联读取需同时排除所属课件已删除的记录。软删除不会自动触发外键。需要恢复卡片时优先恢复原行，避免唯一键因软删除记录仍在而拒绝重新创建。
+
+物理删除课件会级联删除原文块、笔记、知识点、自测和导图；卡片随知识点或课件级联删除，review_log随卡片删除。错题保留，但课件、知识点和原文块引用置空。因此复习流水并非永久保留，物理清理前必须明确保留或归档政策；本版不安排自动物理清理。
+
+## 8.3 安全与备份
+
+用户只访问自己的数据；子表查询通过课件或自测连接验证归属，不只校验子表主键。密码只保存bcrypt摘要；禁止在日志输出密码摘要、完整原文或完整问答。文件下载经过鉴权，禁止直接向前端暴露内部存储路径。应用使用最小权限账号，建表和迁移使用独立管理账号。
+
+建议每日低峰全量备份，保留7天；启用二进制日志后保留14天以支持时间点恢复。文件存储与数据库同步备份，恢复后检查出处及文件引用。备份加密并控制访问；恢复演练在隔离测试环境完成。上述为运维方案，尚待部署配置和恢复测试。
+
+## 8.4 容量与迁移
+
+按1000用户、每人10份课件、每份120块估计120万原文块；若每人300卡、每卡15次复习，则约450万条复习流水。容量为规划假设，实际空间取决于文本长度、索引和文件体积，需要测试测量。
+
+原schema.sql包含DROP重建、种子数据、验收查询及增量迁移段，不应整文件直接运行于已有数据库。后端需拆出适用的初始化或迁移段，先备份，在空测试库验证；数据库表计数过滤TABLE_TYPE=BASE TABLE，以免把两个视图算入13张表。
+
+# 9 需求追踪与验证
+
+| 设计需求 | 数据支撑 | 验收重点 |
+| --- | --- | --- |
+| ER与关系模型 | 第3至5章 | 图、字段及外键动作一致 |
+| 对象关系映射 | 第6章 | 13个实体与主外键逐一匹配 |
+| 领域知识及出处 | chunk、knowledge_point、note | 页码、偏移、文本及课件归属一致 |
+| 用户交互记录 | qa_record、review_log | 用户隔离、引用有效与评分原子性 |
+| 任务执行结果 | 解析状态、笔记、自测及题目 | 失败不发布、版本可追溯、交卷幂等 |
+
+## 9.1 数据验证用例
+
+| 编号 | 场景 | 预期结果 |
+| --- | --- | --- |
+| T01 | 重复用户名或卷内题号 | 唯一约束拒绝重复 |
+| T02 | 跨用户访问课件或题目 | 服务拒绝且不返回内容 |
+| T03 | 知识点引用其他课件块 | 写入前拒绝 |
+| T04 | 笔记生成第2版 | 旧版保持；下游显式绑定第2版 |
+| T05 | 第2版自测错题回填 | 错题版本仍为2，不默认成1 |
+| T06 | 并发重复提交同一自测 | 分数稳定且错题只回填一次 |
+| T07 | 批改或回填中途失败 | 最终落库事务整体回滚 |
+| T08 | 并发评分与请求重试 | 不覆盖新参数且不重复写流水 |
+| T09 | 软删除课件后查询关联内容 | 不再出现在用户活动数据中 |
+| T10 | 测试库物理删除课件 | 按CASCADE和SET NULL检查；承认流水级联删除 |
+| T11 | 父节点自指、成环或跨版本 | 写入拒绝；遍历同时限定版本 |
+| T12 | 原文缺失或引用编号无效 | 显示依据缺失或拒绝发布 |
+| T13 | 恢复数据库和原文件备份 | 用户、笔记及出处可用 |
+| T14 | 统计表和视图数量 | 13张基础表、2个视图；不混计 |
+
+本次完成静态字段与约束核对，以上为待执行的联调用例。尚未在MySQL实例中执行初始化、并发测试、性能测试或恢复演练，不能据此声称验收已通过。
+
+# 10 交接与评审事项
+
+## 10.1 交接清单
+
+本说明书作为第二次作业数据库文档提交。建库依据为吴雅晴交付的schema.sql，ER图继承原交付。后端实现应同时阅读第7章和第8章，避免将原脚本中的示例直接作为生产调用方式。
+
+| 事项 | 处理意见 |
+| --- | --- |
+| 卡片范围 | 团队确认后再启用2张卡片表、评分流程和扩展视图 |
+| 数据库选型 | 后端确认MySQL版本和中文检索配置 |
+| 多材料合并 | 当前未建模；需要时新增任务及材料关联结构并评审 |
+| SQL后续修订 | 补齐并发评分防覆盖、版本复制和导图版本过滤；如新增约束同步升级脚本 |
+| 生成任务追踪 | 若需要逐次失败日志、模型及提示词版本，新增任务审计模型 |
+| 正式发布 | 完成测试库建库、用例、恢复演练及跨用户权限验证 |
+
+## 10.2 本次编制工作
+
+在已有数据库模型基础上整理说明书，核对SQL字段、引用和删除动作，补充关系数据模型与13个实体的ORM映射，明确知识、问答及任务结果的存储方式，细化版本、事务和维护要求，并给出可执行的验收检查项。数据库模型与建库脚本的原始设计归属于前序交付者，本次不重复认领其设计成果。
+
+## 10.3 配套说明
+
+源码与图稿沿用交付包，未在本次静态整理中修改。原稿中的个人经历、完成状态和未提供的需求文档内容，不作为本版已验证事实。最终合并系统设计说明书时，应对齐同一套业务名称、状态枚举、范围和版本。
