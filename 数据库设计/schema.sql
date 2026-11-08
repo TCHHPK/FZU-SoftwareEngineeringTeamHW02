@@ -547,16 +547,10 @@ UPDATE `self_test_item` SET `is_backfilled` = 1 WHERE `is_correct` = 0;
 
 INSERT INTO `mindmap_node` (`id`, `courseware_id`, `user_id`, `parent_id`, `title`, `node_type`, `knowledge_point_id`, `summary`, `source_chunk_id`, `page_no`, `level`, `order_no`, `is_collapsed`)
 VALUES (1, 1, 1, NULL, '第7章 线性回归与逻辑回归', 1, NULL, '本章知识结构总览', NULL, NULL, 1, 1, 0);
--- 种子里的错题已由第 2、3 题回填，标记为已回填，避免重复计数
-UPDATE `self_test_item` SET `is_backfilled` = 1 WHERE `is_correct` = 0;
-
 INSERT INTO `mindmap_node` (`id`, `courseware_id`, `user_id`, `parent_id`, `title`, `node_type`, `knowledge_point_id`, `summary`, `source_chunk_id`, `page_no`, `level`, `order_no`, `is_collapsed`)
 VALUES
 (2, 1, 1, 1, '线性回归', 2, NULL, '用线性组合拟合连续输出', 1, 5, 2, 1, 0),
 (5, 1, 1, 1, '逻辑回归', 2, NULL, '用 Sigmoid 输出正类概率', 5, 12, 2, 2, 0);
--- 种子里的错题已由第 2、3 题回填，标记为已回填，避免重复计数
-UPDATE `self_test_item` SET `is_backfilled` = 1 WHERE `is_correct` = 0;
-
 INSERT INTO `mindmap_node` (`id`, `courseware_id`, `user_id`, `parent_id`, `title`, `node_type`, `knowledge_point_id`, `summary`, `source_chunk_id`, `page_no`, `level`, `order_no`, `is_collapsed`)
 VALUES
 (3, 1, 1, 2, '模型形式', 4, 1, 'y = w^T x + b', 1, 5, 3, 1, 0),
