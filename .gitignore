@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+storage/
+logs/
+data/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+Thumbs.db
