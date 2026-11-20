@@ -1,0 +1,4 @@
+# 生成进度曲线、燃尽图与数据底表所需的第三方库
+# 实测环境：Python 3.12 / Windows 11
+matplotlib>=3.5      # 绘制 figs/*.png（含中文字体设置）
+XlsxWriter>=3.1      # 生成数据底表与原生图表
