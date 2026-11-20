@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""生成《Alpha 冲刺 进度与燃尽数据》Excel（含可编辑原生图表）。"""
+"""生成《进度与燃尽数据》Excel（含可编辑原生图表）。输出到本目录，不入库。"""
 import csv
 
 from pathlib import Path
 import xlsxwriter
 
 BASE = Path(__file__).resolve().parents[1]
-OUT = str(BASE / "天生一队-Alpha冲刺-进度与燃尽数据.xlsx")
+OUT = str(BASE / "进度与燃尽数据.xlsx")
 
 rows = list(csv.DictReader(open(BASE / "data" / "daily.csv", encoding="utf-8-sig")))
 n = len(rows)
