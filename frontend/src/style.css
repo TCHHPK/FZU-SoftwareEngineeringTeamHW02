@@ -1,0 +1,70 @@
+/* 1. 清除默认边距，铺满全屏 */
+body, html, #app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  
+  /* 清新的浅蓝紫流动渐变 */
+  background: linear-gradient(-45deg, #e0eafc, #cfdef3, #e2d1c3, #d4e4f7);
+  background-size: 400% 400%;
+  animation: gradientBG 15s ease infinite;
+}
+
+@keyframes gradientBG {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* ========================================= */
+/* 👇 所有的普通按钮（登录、上传等）特效 */
+.el-button {
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+/* 鼠标悬停：上浮并加阴影 */
+.el-button:hover {
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* 鼠标点击：下沉按压感 */
+.el-button:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+/* ========================================= */
+/* 👇 左侧菜单栏项的特效 */
+.el-menu-item {
+  transition: all 0.3s ease !important;
+  margin: 5px 10px !important;
+  border-radius: 8px !important;
+}
+
+/* 左侧菜单悬停：向右滑动 */
+.el-menu-item:hover {
+  background-color: rgba(255, 255, 255, 0.6) !important;
+  transform: translateX(8px); 
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* 左侧菜单选中态 */
+.el-menu-item.is-active {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  font-weight: bold !important;
+  color: #409eff !important;
+  box-shadow: 0 4px 12px rgba(64, 158, 255, 0.2) !important;
+}
+
+/* ========================================= */
+/* 👇 1018 风格的毛玻璃卡片：自测页、错题本页等复用 */
+.glass-card {
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  background: rgba(255, 255, 255, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1) !important;
+}
