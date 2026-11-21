@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 import unicodedata
 
 from app.db.conn import transaction
@@ -184,12 +185,35 @@ def list_wrong_questions(
 
 
 def get_wrong_question(conn: sqlite3.Connection, user_id: int, wrong_id: int) -> dict | None:
-    """错题详情；越权（不是自己的）一律返回 None，由路由层转 404。"""
+    """错题详情；越权（不是自己的）一律返回 None，由路由层转 404。
+
+    额外带上 options：错题本页的重做界面需要选项才能渲染单选框。
+    选项存在 self_test_items.options_json 里（source_type='self_test' 时
+    source_id 就是 item_id）；找不到就返回空数组，前端退化为文本输入。
+    """
     row = conn.execute(
         "SELECT * FROM wrong_questions WHERE wrong_id = :wid AND user_id = :uid",
         {"wid": int(wrong_id), "uid": int(user_id)},
     ).fetchone()
-    return _row_to_out(dict(row)) if row is not None else None
+    if row is None:
+        return None
+
+    data = _row_to_out(dict(row))
+    data["options"] = []
+    data["question_type"] = "single"
+    if (data["source_type"] or "") == "self_test":
+        item = conn.execute(
+            "SELECT options_json, question_type FROM self_test_items WHERE item_id = :iid",
+            {"iid": int(data["source_id"])},
+        ).fetchone()
+        if item is not None:
+            try:
+                parsed = json.loads(item["options_json"] or "[]")
+                data["options"] = [str(x) for x in parsed] if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, TypeError):
+                data["options"] = []
+            data["question_type"] = item["question_type"] or "single"
+    return data
 
 
 # --------------------------------------------------------------------------

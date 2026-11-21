@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS self_tests (
     scope_text     TEXT NOT NULL DEFAULT '',
     question_count INTEGER NOT NULL DEFAULT 5,
     status         TEXT NOT NULL DEFAULT 'draft'
-                   CHECK (status IN ('draft', 'ready', 'submitted', 'graded')),
+                   CHECK (status IN ('draft', 'ready', 'submitted', 'graded', 'failed')),
     total_score    REAL NOT NULL DEFAULT 0,
     score          REAL NOT NULL DEFAULT 0,
     correct_count  INTEGER NOT NULL DEFAULT 0,

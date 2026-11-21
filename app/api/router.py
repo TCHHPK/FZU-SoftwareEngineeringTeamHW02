@@ -9,6 +9,8 @@ from app.api import (
     routes_auth,
     routes_chat,
     routes_meta,
+    routes_mindmap,
+    routes_self_test,
     routes_sessions,
     routes_uploads,
     routes_wrong,
@@ -22,3 +24,5 @@ api_router.include_router(routes_sessions.router)
 api_router.include_router(routes_chat.router)
 api_router.include_router(routes_admin.router)
 api_router.include_router(routes_wrong.router)
+api_router.include_router(routes_mindmap.router)
+api_router.include_router(routes_self_test.router)
