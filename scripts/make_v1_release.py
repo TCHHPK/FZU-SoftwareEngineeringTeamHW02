@@ -35,9 +35,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DESKTOP = ROOT.parent
 # 每次用带时间戳的暂存目录：Windows 上旧文件可能被资源管理器/看图软件占用，
 # 复用同名目录会偶发 PermissionError。压缩包内部的顶层目录名保持固定。
-ARC_PREFIX = "course-note-agent-v1.0"
+def _read_version() -> str:
+    version_file = ROOT / "VERSION"
+    return version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "0.0.0"
+
+
+VERSION = _read_version()
+ARC_PREFIX = f"course-note-agent-v{VERSION}"
 STAGE = Path.home() / "_v1_stage" / f"{ARC_PREFIX}-{time.strftime('%H%M%S')}"
-OUTPUT = DESKTOP / "course-note-agent-v1.0-20261116.zip"
+OUTPUT = DESKTOP / f"{ARC_PREFIX}-{time.strftime('%Y%m%d')}.zip"
 
 EXCLUDE_DIRS = {".venv", "__pycache__", ".pytest_cache", "storage", "logs", ".git", "node_modules"}
 EXCLUDE_FILES = {".env", ".env.bak"}
@@ -136,7 +142,7 @@ def sha256(path: Path) -> str:
 
 def write_version_txt(root: Path, stats: dict) -> None:
     text = f"""课程课件笔记整理与知识梳理 Agent
-版本 1.0（首个完整发布版）
+版本 {VERSION}（遵循语义化版本 2.0.0）
 打包日期：{time.strftime('%Y-%m-%d')}
 
 ======================================================================
@@ -275,6 +281,9 @@ def main() -> int:
         "数据库（知识库）相关工作.docx",
     ]
     n_doc = copy_files([DESKTOP / d for d in docs], STAGE / "03-文档")
+    # 仓库内的工程文档也放进来（合并说明、版本规范、模块交接），评审不用解压源码找
+    repo_docs = sorted((ROOT / "docs").glob("*.md")) if (ROOT / "docs").exists() else []
+    n_doc += copy_files(repo_docs, STAGE / "03-文档")
     log(f"      {n_doc} 个文件")
 
     log("04-设计图 ...")

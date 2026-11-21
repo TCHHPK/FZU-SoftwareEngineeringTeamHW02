@@ -90,12 +90,18 @@ def init_databases(*, reset: bool = False) -> dict[str, str]:
 # 增量迁移：字段以 schema.sql 为准，这里保证已存在的库也能补上新字段
 _BUSINESS_MIGRATIONS: list[tuple[str, str, str]] = [
     ("documents", "display_name", "TEXT NOT NULL DEFAULT ''"),
+    # 自测表由 migrations/002 创建；老库升级时补上「出题失败原因」字段，
+    # 否则自测接口在旧库上会报 no such column: error_message
+    ("self_tests", "error_message", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
 def _migrate_business(conn: sqlite3.Connection) -> None:
     for table, column, definition in _BUSINESS_MIGRATIONS:
         existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            # 表还没建（会在后面的 _run_migrations 里创建），跳过，避免 ALTER 报错
+            continue
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     # 历史数据回填：display_name 为空时用 source_file 兜底

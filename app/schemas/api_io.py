@@ -215,3 +215,25 @@ class RetryOut(BaseModel):
     correct_streak: int
     mastered: bool
     mastery_threshold: int
+
+
+# --------------------------------------------------------------------------
+# 智能自测（U14）
+# --------------------------------------------------------------------------
+class SelfTestCreate(BaseModel):
+    """组卷请求。question_count 限 1~20：太少没意义，太多一次做完不现实。"""
+
+    session_id: int = Field(gt=0)
+    question_count: int = Field(default=5, ge=1, le=20)
+    scope_text: str = Field(default="", max_length=200)
+
+
+class AnswerIn(BaseModel):
+    item_id: int = Field(gt=0)
+    answer: str = Field(default="", max_length=200)
+
+
+class SelfTestSubmit(BaseModel):
+    """交卷请求。answers 允许缺题（未作答按错处理，不报错）。"""
+
+    answers: list[AnswerIn] = Field(default_factory=list)
