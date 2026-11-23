@@ -212,6 +212,123 @@ def test_self_test_list_and_empty_answers(tmp_path) -> None:
         assert row["status"] == "graded" and row["correct_count"] == 0
 
 
+def test_submit_rejects_draft_and_failed(tmp_path) -> None:
+    """缺陷 A30：只有 ready 能判分；draft / failed 一律 409，不许返回 200 判 0 分。"""
+    pdf = _make_pdf(tmp_path / "quiz_a30.pdf")
+    with TestClient(app) as client:
+        _register(client, "quiz_frank")
+        session_id = _prepare_session(client, pdf)
+        test_id = client.post("/api/self-tests",
+                              json={"session_id": session_id, "question_count": 2}
+                              ).json()["data"]["test_id"]
+        assert client.get(f"/api/self-tests/{test_id}").json()["data"]["status"] == "ready"
+
+        # 手工把状态改成 draft（模拟「还在出题」的卷子）
+        with business_db() as conn:
+            conn.execute("UPDATE self_tests SET status = 'draft' WHERE test_id = ?", (test_id,))
+        r = client.post(f"/api/self-tests/{test_id}/submit", json={"answers": []})
+        assert r.status_code == 409, r.text
+        assert "出题" in r.json()["message"]
+        # 草稿卷没有被判分
+        with business_db() as conn:
+            row = conn.execute("SELECT status, score FROM self_tests WHERE test_id = ?",
+                               (test_id,)).fetchone()
+        assert row["status"] == "draft" and float(row["score"] or 0) == 0.0
+
+        # 出题失败的卷子同样 409，且提示重新组卷
+        with business_db() as conn:
+            conn.execute("UPDATE self_tests SET status = 'failed' WHERE test_id = ?", (test_id,))
+        r = client.post(f"/api/self-tests/{test_id}/submit", json={"answers": []})
+        assert r.status_code == 409
+        assert "重新组卷" in r.json()["message"]
+
+
+def test_target_and_actual_exposed(tmp_path) -> None:
+    """缺陷 A32：要 5 题只给 3 题时，target 与 actual 都要给出，不许静默改写题量。"""
+    pdf = _make_pdf(tmp_path / "quiz_a32.pdf")
+    with TestClient(app) as client:
+        _register(client, "quiz_grace")
+        session_id = _prepare_session(client, pdf)
+
+        # 课件只有 3 个知识点，却要 5 题
+        test_id = client.post("/api/self-tests",
+                              json={"session_id": session_id, "question_count": 5}
+                              ).json()["data"]["test_id"]
+        paper = client.get(f"/api/self-tests/{test_id}").json()["data"]
+        assert paper["status"] == "ready"
+        assert paper["target_count"] == 5, "target 应保留用户要的题量"
+        assert paper["actual_count"] == len(paper["items"])
+        assert paper["actual_count"] < 5, "本例知识点不足，实际题数应少于 5"
+        assert paper["shortfall"] is True, "少给时必须标记 shortfall，不能静默"
+
+        # question_count 不应被改写成实际条数（A32 的原始表现）
+        with business_db() as conn:
+            row = conn.execute("SELECT question_count FROM self_tests WHERE test_id = ?",
+                               (test_id,)).fetchone()
+        assert int(row["question_count"]) == 5, "question_count 必须保留 target"
+
+
+def test_concurrent_submit_does_not_double_count(tmp_path) -> None:
+    """缺陷 A33：两个线程同时交卷，分数与错题次数都不能翻倍。
+
+    直接调 service（不走 HTTP），用两条独立连接模拟两个并发请求；
+    BEGIN IMMEDIATE + 带条件的 UPDATE 保证只有一个请求真正判分。
+    """
+    import threading
+
+    from app.services import quiz as quiz_service
+
+    pdf = _make_pdf(tmp_path / "quiz_a33.pdf")
+    with TestClient(app) as client:
+        _register(client, "quiz_heidi")
+        session_id = _prepare_session(client, pdf)
+        test_id = client.post("/api/self-tests",
+                              json={"session_id": session_id, "question_count": 2}
+                              ).json()["data"]["test_id"]
+        assert client.get(f"/api/self-tests/{test_id}").json()["data"]["status"] == "ready"
+        answers = _wrong_answers(test_id)
+        # user_id 不能用常量：各测试共用一个业务库，用户 id 是递增的
+        with business_db() as conn:
+            owner_id = int(conn.execute(
+                "SELECT user_id FROM self_tests WHERE test_id = ?", (test_id,)
+            ).fetchone()["user_id"])
+
+    results: list[dict] = []
+    errors: list[Exception] = []
+    barrier = threading.Barrier(2)
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            with business_db() as conn:
+                results.append(quiz_service.submit_test(
+                    conn, test_id=test_id, user_id=owner_id, answers=answers))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"并发交卷抛异常：{errors}"
+    assert len(results) == 2, "两个请求都应拿到结果或明确 409"
+
+    # 错题次数只加一次：每道题的 wrong_count 必须是 1
+    with business_db() as conn:
+        rows = conn.execute(
+            "SELECT wrong_count FROM wrong_questions WHERE source_type = 'self_test' "
+            "AND source_id IN (SELECT item_id FROM self_test_items WHERE test_id = ?)",
+            (test_id,)).fetchall()
+        graded = conn.execute("SELECT status, score FROM self_tests WHERE test_id = ?",
+                              (test_id,)).fetchone()
+    assert graded["status"] == "graded"
+    assert all(int(r["wrong_count"]) == 1 for r in rows), f"错题次数被重复累加：{[dict(r) for r in rows]}"
+    # 两次返回的分数必须一致（都来自同一次判分）
+    assert len({r["score"] for r in results}) == 1
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

@@ -52,7 +52,17 @@ def kb_db() -> Iterator[sqlite3.Connection]:
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    conn.execute("BEGIN")
+    """写事务：一开始就拿写锁（BEGIN IMMEDIATE）。
+
+    为什么不用裸 BEGIN：SQLite 默认是延迟事务，BEGIN 时只拿读锁，
+    直到第一条写语句才升级为写锁。两个请求就会同时读到 status='ready'，
+    各自往下判分，出现"错题次数翻倍"（缺陷 A33）。
+
+    BEGIN IMMEDIATE 在事务开始时就取 RESERVED 写锁，第二个请求会等待
+    （busy_timeout 10 秒）而不是读到旧状态；配合 SQL 里的
+    `WHERE status='ready'` 与影响行数校验，重复判分被彻底挡住。
+    """
+    conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
@@ -93,6 +103,16 @@ _BUSINESS_MIGRATIONS: list[tuple[str, str, str]] = [
     # 自测表由 migrations/002 创建；老库升级时补上「出题失败原因」字段，
     # 否则自测接口在旧库上会报 no such column: error_message
     ("self_tests", "error_message", "TEXT NOT NULL DEFAULT ''"),
+    # v1.3.0 K4：错题按记忆规律排期（迁移 003 的意图）。
+    # SQLite 的 ADD COLUMN 不支持 IF NOT EXISTS，重复执行会报 duplicate column，
+    # 所以这六个字段走这里的「先查 PRAGMA 再 ALTER」路径保证幂等；
+    # migrations/003_review_plan.sql 只负责建表和建索引（可用 IF NOT EXISTS）。
+    ("wrong_questions", "state", "TEXT NOT NULL DEFAULT 'new'"),
+    ("wrong_questions", "stability", "REAL NOT NULL DEFAULT 0"),
+    ("wrong_questions", "difficulty", "REAL NOT NULL DEFAULT 0"),
+    ("wrong_questions", "due_at", "TEXT"),
+    ("wrong_questions", "review_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("wrong_questions", "last_review_at", "TEXT"),
 ]
 
 
