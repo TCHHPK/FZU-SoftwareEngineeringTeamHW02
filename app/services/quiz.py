@@ -118,6 +118,15 @@ def build_items(conn: sqlite3.Connection, test_id: int) -> int:
     # ① 优先用陈瑀涵的 Agent 出题；② 没有就退化为确定性构造
     items = _agent_items(conn, session_id, kps, count) or _template_items(kps, count)
 
+    if not items:
+        raise QuizError("知识点不足，无法出题", 409)
+
+    # 缺陷 A32：题目数量不足时，过去会把 question_count 改成实际条数，
+    # 把「少给」静默写成「实际题量」，用户看不出被克扣。
+    # 现在的处理：question_count 保留用户要的题量（target），
+    # 实际条数在响应里以 actual 另行给出（见 get_test），不做静默改写。
+    # 一条都出不来才算失败（上面 409）；少给但能出卷就照常 ready 并暴露差额。
+
     # 分值分配：不能简单用 100/n（3 题会得到 33.33×3=99.99），
     # 让最后一项吸收余数，保证满分正好 100。
     per_score = round(TOTAL_SCORE / len(items), 2)
@@ -138,11 +147,12 @@ def build_items(conn: sqlite3.Connection, test_id: int) -> int:
                  item.get("evidence_chunk_key", ""), item.get("evidence_page"),
                  score),
             )
+        # question_count 不动：它是用户要的题量（target），实际题量由 COUNT 得出
         conn.execute(
             """UPDATE self_tests
-                  SET status = 'ready', total_score = ?, question_count = ?, error_message = ''
+                  SET status = 'ready', total_score = ?, error_message = ''
                 WHERE test_id = ?""",
-            (round(sum(scores), 2), len(items), test_id),
+            (round(sum(scores), 2), test_id),
         )
     return len(items)
 
@@ -344,14 +354,20 @@ def get_test(conn: sqlite3.Connection, *, test_id: int, user_id: int) -> dict:
     return {
         "test_id": int(test["test_id"]),
         "course_name": test["course_name"],
-        "status": test["status"],
-        "question_count": len(items),
+        # question_count 是用户要的题量（target），actual_count 是实际出了几道。
+        # 缺陷 A32 的修复口径：少给时不改写 target，而是两个数都给出并标记 shortfall，
+        # 让前端/用户能看出「要 5 题只给了 3 题」，不再静默吞掉。
+        "question_count": int(test["question_count"] or 0),
+        "target_count": int(test["question_count"] or 0),
+        "actual_count": len(items),
+        "shortfall": 0 < len(items) < int(test["question_count"] or 0),
         "total_score": float(test["total_score"] or TOTAL_SCORE),
         "score": float(test["score"] or 0),
         "correct_count": int(test["correct_count"] or 0),
         "error_message": test["error_message"] or "",
         "created_at": test["created_at"],
         "submitted_at": test["submitted_at"],
+        "status": test["status"],
         "wrong_count": wrong_count,
         "items": items,
     }
@@ -377,15 +393,25 @@ def submit_test(conn: sqlite3.Connection, *, test_id: int, user_id: int,
     幂等：status 已是 graded 时直接返回上次结果，不重复加分、不重复记错题。
     """
     test = _own_test(conn, test_id, user_id)
-    if test["status"] == "failed":
-        raise QuizError("该自测出题失败，请重新组卷", 409)
 
-    # 判过分的卷子不再判第二次。
-    # 原因很实际：学生在页面上手抖点两下「交卷」，如果每次都重新判，
-    # 分数会加两遍、错题的 wrong_count 也会翻倍，按知识点聚合出来的薄弱度直接失真。
-    # 所以这里不看这次提交了什么，直接返回上一次的结果。
-    if test["status"] == "graded":
+    # 缺陷 A30：入口必须是状态白名单，不能只拦 failed。
+    # 以前只判断 failed，草稿状态的卷子（还在出题、items 可能是空的）会直接落到判分分支，
+    # 返回 200 且算出 0 分——用户以为交卷成功，其实卷子根本没出完。
+    status = test["status"]
+    if status == "graded":
+        # 判过分的卷子不再判第二次：学生手抖点两下「交卷」时，
+        # 重判会让分数加两遍、错题 wrong_count 翻倍，薄弱度直接失真。
         return get_test(conn, test_id=test_id, user_id=user_id)
+    if status == "submitted":
+        # 另一个请求正在判分（A33 的并发场景）
+        raise QuizError("试卷正在判分中，请稍后刷新查看结果", 409)
+    if status != "ready":
+        # draft（出题中）/ failed（出题失败）以及任何未知状态，一律不许判分
+        reason = {
+            "draft": "试卷还在出题中，请等状态变为 ready 后再交卷",
+            "failed": "该自测出题失败，请重新组卷",
+        }.get(status, f"当前状态 {status} 不允许交卷")
+        raise QuizError(reason, 409)
 
     answer_map = {int(a["item_id"]): str(a.get("answer") or "") for a in answers if a.get("item_id")}
     rows = conn.execute(
@@ -395,59 +421,78 @@ def submit_test(conn: sqlite3.Connection, *, test_id: int, user_id: int,
     correct_count = 0
     gained = 0.0
     wrong_items: list[sqlite3.Row] = []
+    lost_race = False
 
     # 分数、逐题结果、错题回填必须在同一个事务里。
     # 中间任何一步失败就整体回滚——不能出现「分数有了、错题没进库」这种半截状态，
     # 那种状态下学生看到 80 分却找不到错题，而且没有任何报错提示，最难查。
+    #
+    # 并发（缺陷 A33）：事务用 BEGIN IMMEDIATE（见 db/conn.py），进入时已拿写锁；
+    # 再用「WHERE status='ready'」这条带条件的 UPDATE 抢占判分权，
+    # 影响行数为 0 说明别人抢先判过了，本请求不再重复判分。
     with transaction(conn):
-        for row in rows:
-            item_id = int(row["item_id"])
-            user_answer = answer_map.get(item_id, "")
-            is_correct = _judge(row["question_type"], row["answer"], user_answer)
-            score = float(row["score"] or 0) if is_correct else 0.0
-
-            conn.execute(
-                """UPDATE self_test_items
-                      SET user_answer = ?, is_correct = ?, score = ?,
-                          answered_at = CURRENT_TIMESTAMP
-                    WHERE item_id = ?""",
-                (user_answer, 1 if is_correct else 0, score, item_id),
-            )
-            if is_correct:
-                correct_count += 1
-                gained += score
-            else:
-                wrong_items.append(row)
-
-        # 错题回填：靠 (user_id, source_type, source_id) 这个唯一键去重。
-        # 一道题永远只有一条记录：第一次答错是 INSERT，之后再答错走 UPDATE，
-        # wrong_count 加一、连对清零、已掌握状态撤销。
-        # 反面教材：如果每次答错都插一行，错题本会变成一长串重复题，
-        # 按知识点聚合出来的「薄弱度」也会算错——同一个知识点显示错 5 次，
-        # 其实只是同一道题错了 5 次。
-        for row in wrong_items:
-            conn.execute(
-                """INSERT INTO wrong_questions
-                     (user_id, knowledge_name, source_type, source_id, question_stem,
-                      correct_answer, analysis, evidence_chunk_key, evidence_page)
-                   VALUES (?, ?, 'self_test', ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(user_id, source_type, source_id) DO UPDATE SET
-                     wrong_count = wrong_count + 1,
-                     correct_streak = 0,
-                     mastered = 0,
-                     last_wrong_at = CURRENT_TIMESTAMP""",
-                (int(user_id), row["knowledge_name"] or "", int(row["item_id"]),
-                 row["stem"], row["answer"], row["analysis"],
-                 row["evidence_chunk_key"], row["evidence_page"]),
-            )
-
-        conn.execute(
+        claim = conn.execute(
             """UPDATE self_tests
-                  SET status = 'graded', score = ?, correct_count = ?,
-                      submitted_at = CURRENT_TIMESTAMP, graded_at = CURRENT_TIMESTAMP
-                WHERE test_id = ?""",
-            (round(gained, 2), correct_count, test_id),
+                  SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP
+                WHERE test_id = ? AND status = 'ready'""",
+            (test_id,),
         )
+        if claim.rowcount == 0:
+            lost_race = True
+        else:
+            for row in rows:
+                item_id = int(row["item_id"])
+                user_answer = answer_map.get(item_id, "")
+                is_correct = _judge(row["question_type"], row["answer"], user_answer)
+                score = float(row["score"] or 0) if is_correct else 0.0
+
+                conn.execute(
+                    """UPDATE self_test_items
+                          SET user_answer = ?, is_correct = ?, score = ?,
+                              answered_at = CURRENT_TIMESTAMP
+                        WHERE item_id = ?""",
+                    (user_answer, 1 if is_correct else 0, score, item_id),
+                )
+                if is_correct:
+                    correct_count += 1
+                    gained += score
+                else:
+                    wrong_items.append(row)
+
+            # 错题回填：靠 (user_id, source_type, source_id) 这个唯一键去重。
+            # 一道题永远只有一条记录：第一次答错是 INSERT，之后再答错走 UPDATE，
+            # wrong_count 加一、连对清零、已掌握状态撤销。
+            for row in wrong_items:
+                conn.execute(
+                    """INSERT INTO wrong_questions
+                         (user_id, knowledge_name, source_type, source_id, question_stem,
+                          correct_answer, analysis, evidence_chunk_key, evidence_page)
+                       VALUES (?, ?, 'self_test', ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(user_id, source_type, source_id) DO UPDATE SET
+                         wrong_count = wrong_count + 1,
+                         correct_streak = 0,
+                         mastered = 0,
+                         last_wrong_at = CURRENT_TIMESTAMP""",
+                    (int(user_id), row["knowledge_name"] or "", int(row["item_id"]),
+                     row["stem"], row["answer"], row["analysis"],
+                     row["evidence_chunk_key"], row["evidence_page"]),
+                )
+
+            conn.execute(
+                """UPDATE self_tests
+                      SET status = 'graded', score = ?, correct_count = ?,
+                          graded_at = CURRENT_TIMESTAMP
+                    WHERE test_id = ?""",
+                (round(gained, 2), correct_count, test_id),
+            )
+
+    if lost_race:
+        # 抢锁失败：如果对方已经判完，直接把结果给他（幂等语义）；
+        # 否则说明对方正在判，让他稍后刷新，避免两套结果打架。
+        fresh = _own_test(conn, test_id, user_id)
+        if fresh["status"] == "graded":
+            return get_test(conn, test_id=test_id, user_id=user_id)
+        raise QuizError("试卷正在判分中，请稍后刷新查看结果", 409)
 
     result = get_test(conn, test_id=test_id, user_id=user_id)
     result["wrong_count"] = len(wrong_items)

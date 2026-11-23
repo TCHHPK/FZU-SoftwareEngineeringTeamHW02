@@ -12,6 +12,12 @@ python-docx==1.2.0            # DOCX 解析
 numpy==2.2.1                  # 可选向量检索、矩阵计算
 jinja2==3.1.5                 # 导出模板（Markdown / LaTeX）
 
+# 学习闭环：错题按记忆规律排期（v1.3.0 K4，口径裁决 C2 批准引入）
+# 选 6.3.3 的理由：Scheduler.review_card(card, rating) 返回新卡与复习日志，
+# 可直接映射到 wrong_questions 的 stability / difficulty / due_at 三列；
+# 回滚方式：移除本行依赖并把六个调度字段回默认值，旧逻辑（薄弱度排序）仍可用。
+fsrs==6.3.3
+
 # 开发与测试
 pytest==8.3.4
 httpx==0.28.1                 # FastAPI TestClient 依赖

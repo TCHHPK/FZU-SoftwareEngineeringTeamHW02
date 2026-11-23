@@ -123,6 +123,12 @@ class Settings:
     enable_quality_eval: bool = _env_bool("ENABLE_QUALITY_EVAL", True)
     enable_formula_ocr: bool = _env_bool("ENABLE_FORMULA_OCR", False)
 
+    # v1.3.0（Beta）新增开关。默认值都取「关闭」以外的最保守可用值：
+    # 复习包与冲刺计划在服务端未就绪时会被路由层挡下，不会半死不活地返回空数据。
+    enable_review_pack: bool = _env_bool("ENABLE_REVIEW_PACK", True)      # K1 复习包
+    enable_review_plan: bool = _env_bool("ENABLE_REVIEW_PLAN", True)      # K2 冲刺计划
+    enable_wrong_schedule: bool = _env_bool("ENABLE_WRONG_SCHEDULE", True)  # K4 错题排期
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
@@ -135,6 +141,9 @@ class Settings:
             "exam_scope": self.enable_exam_scope,
             "quality_eval": self.enable_quality_eval,
             "formula_ocr": self.enable_formula_ocr,
+            "review_pack": self.enable_review_pack,
+            "review_plan": self.enable_review_plan,
+            "wrong_schedule": self.enable_wrong_schedule,
         }
 
 
