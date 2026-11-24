@@ -153,11 +153,36 @@ def main() -> int:
             f"cd {REMOTE_DIR} && ./.venv/bin/python -c "
             "\"from app.db.conn import init_databases; print(init_databases())\""))
 
+        log("[7.5/9] 迁移后校验（字段与表是否真的到位）")
+        print("      " + remote.run(
+            f"cd {REMOTE_DIR} && ./.venv/bin/python - <<'PY'\n"
+            "import sqlite3, json\n"
+            "c = sqlite3.connect('storage/business.db')\n"
+            "cols = {r[1] for r in c.execute('PRAGMA table_info(wrong_questions)')}\n"
+            "need = ['state','stability','difficulty','due_at','review_count','last_review_at']\n"
+            "missing = [n for n in need if n not in cols]\n"
+            "traces = c.execute(\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='session_traces'\").fetchone()[0]\n"
+            "idx = {r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='index'\")}\n"
+            "print(json.dumps({'missing_cols': missing, 'traces': bool(traces),\n"
+            "                  'idx_wq_due': 'idx_wq_due' in idx,\n"
+            "                  'idx_trace': 'idx_trace_session' in idx}, ensure_ascii=False))\n"
+            "PY"))
+
         log("[8/9] 重启服务")
         remote.run(f"systemctl restart {APP_NAME}")
         time.sleep(4)
-        print("      状态:", remote.run(f"systemctl is-active {APP_NAME} || true"))
+        state = remote.run(f"systemctl is-active {APP_NAME} || true")
+        print("      状态:", state)
         print("      端口:", remote.run("ss -ltnp | grep 8000 || echo 未监听"))
+        if state.strip() != "active":
+            log("服务没起来，自动回滚到部署前备份")
+            remote.run(f"tar xzf {backup} -C {REMOTE_DIR}", check=False)
+            remote.run(f"systemctl restart {APP_NAME}", check=False)
+            time.sleep(3)
+            print("      回滚后状态:", remote.run(f"systemctl is-active {APP_NAME} || true"))
+            print(f"      备份：{backup}（已还原）")
+            return 1
 
         log("[9/9] 验证")
         print("      健康:", remote.run("curl -s -m 5 http://127.0.0.1:8000/api/health"))
