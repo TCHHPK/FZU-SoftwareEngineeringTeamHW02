@@ -1,7 +1,8 @@
 """错题本（U13）接口。
 
-三个端点（契约表 5）：
+四个端点（契约表 5 + v1.3.0 K4）：
     GET  /api/wrong-questions              错题列表 + 按知识点的薄弱度聚合
+    GET  /api/wrong-questions/due          今日待复习队列（v1.3.0，必须先注册）
     GET  /api/wrong-questions/{id}         错题详情（含解析与出处）
     POST /api/wrong-questions/{id}/retry   重做一题：判分 + 更新连对/掌握状态
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentUser, DbDep
+from app.core.config import settings
 from app.schemas.api_io import Envelope, RetryRequest
 from app.services import wrong_book
 
@@ -33,6 +35,19 @@ def list_wrong(
         knowledge_name=knowledge_name, mastered=mastered,
         limit=limit, offset=offset,
     )
+    return Envelope(data=data)
+
+
+# 静态路径必须声明在 /{wrong_id} 之前：否则 FastAPI 会先匹配动态段，
+# 把 "due" 当 int 解析直接返回 422（契约 3.4 已实测踩坑）。
+@router.get("/due", response_model=Envelope, summary="今日待复习队列（K4）")
+def list_due(user: CurrentUser, conn: DbDep,
+             limit: int = Query(20, ge=1, le=100),
+             offset: int = Query(0, ge=0)) -> Envelope:
+    if not settings.enable_wrong_schedule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "错题排期功能未开启")
+    data = wrong_book.list_due_questions(
+        conn, int(user["user_id"]), limit=limit, offset=offset)
     return Envelope(data=data)
 
 
