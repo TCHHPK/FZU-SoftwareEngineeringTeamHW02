@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -237,3 +238,112 @@ class SelfTestSubmit(BaseModel):
     """交卷请求。answers 允许缺题（未作答按错处理，不报错）。"""
 
     answers: list[AnswerIn] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# v1.3.0（Beta）新增模型
+#
+# 契约：docs/契约-v1.3.md 3.1–3.5。本文件由沈文驰统一写入（C5 裁决：
+# 模型先行，路由后接），其他人只提交字段片段，不直接改这里。
+# 五组依次为：自测 target/actual、复习包、冲刺计划、到期队列、出处原文。
+# --------------------------------------------------------------------------
+class SelfTestOut(BaseModel):
+    """自测取卷/交卷响应（A32 修复口径）。
+
+    question_count 语义固定为「用户要的题量」（target），
+    实际出了几道看 actual_count，差额用 shortfall 标记；
+    不再把 target 静默改写成实际条数。
+    """
+
+    test_id: int
+    course_name: str = ""
+    question_count: int = 0
+    target_count: int = 0
+    actual_count: int = 0
+    shortfall: bool = False
+    total_score: float = 100.0
+    score: float = 0.0
+    correct_count: int = 0
+    error_message: str = ""
+    created_at: str = ""
+    submitted_at: str | None = None
+    status: str = "draft"
+    wrong_count: int = 0
+    items: list[dict] = Field(default_factory=list)
+
+
+# ---- 复习包（K1）----
+class ReviewPackRequest(BaseModel):
+    """生成复习包的可选参数；无 body 时按默认值聚合。"""
+
+    include_mindmap: bool = True
+
+
+class ReviewPackChapter(BaseModel):
+    key: str  # notes / points / mindmap / quiz / wrong
+    title: str
+    item_count: int = 0
+    empty: bool = False
+
+
+class ReviewPackOut(BaseModel):
+    pack_id: int
+    chapters: list[ReviewPackChapter] = Field(default_factory=list)
+    generated_at: str = ""
+
+
+# ---- 考前冲刺计划（K2）----
+class ReviewPlanRequest(BaseModel):
+    """冲刺计划请求。
+
+    exam_date 用字符串接收入口参数，由服务层统一校验并返回 400（契约 3.3：
+    日期格式错误也是 400，而不是 pydantic 默认的 422）；
+    daily_minutes ≤ 0 同样由服务层判定为 400。
+    """
+
+    exam_date: str = Field(description="考试日期，ISO 格式 YYYY-MM-DD")
+    daily_minutes: int = 60
+
+
+class PlanItem(BaseModel):
+    knowledge_name: str
+    minutes: int = 10
+    reason: str = ""
+
+
+class PlanDay(BaseModel):
+    date: date
+    total_minutes: int = 0
+    items: list[PlanItem] = Field(default_factory=list)
+
+
+class ReviewPlanOut(BaseModel):
+    days: list[PlanDay] = Field(default_factory=list)
+    exam_date: date
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"weakness": 0.5, "importance": 0.3, "urgency": 0.2})
+
+
+# ---- 今日待复习队列（K4）----
+class DueWrongQuestionOut(WrongQuestionOut):
+    """现有错题字段 + 四个调度字段（契约 3.4）。"""
+
+    state: str = "new"
+    due_at: str | None = None
+    review_count: int = 0
+    is_due: bool = True
+
+
+class DueQueueOut(BaseModel):
+    items: list[DueWrongQuestionOut] = Field(default_factory=list)
+    total: int = 0
+
+
+# ---- 出处原文（K3）----
+class ChunkDetailOut(BaseModel):
+    chunk_key: str
+    text: str
+    page_num: int | None = None
+    before: str = ""
+    after: str = ""
+    source_file: str = ""

@@ -12,6 +12,11 @@
     - 单选 single：答案字符串完全相等（大小写、全半角归一化后比较），空答案记错。
     - 判断 judge：「对/错」「true/false」「1/0」统一映射后比较，空答案记错。
     - 简答 short：本期不启用。
+
+v1.3.0（K4）错题排期：重做判分后按 FSRS 更新 state / stability / difficulty /
+due_at / review_count / last_review_at 六列（迁移 003 已建好，本模块直接写）。
+答错映射 Rating.Again，答对映射 Rating.Good；未排期的错题 due_at 为空，
+按契约 3.4 视为「已到期」，因此新错题打开就能进入今日队列。
 """
 
 from __future__ import annotations
@@ -19,11 +24,21 @@ from __future__ import annotations
 import sqlite3
 import json
 import unicodedata
+from datetime import datetime, timezone
+
+from fsrs import Card, Rating, Scheduler, State
 
 from app.db.conn import transaction
 
 # 连续答对 2 次自动标记「已掌握」（契约验收路径②）
 MASTERY_THRESHOLD = 2
+
+# FSRS 调度器：全模块共用一个实例（无状态，可复用）
+_SCHEDULER = Scheduler()
+_DB_TO_STATE = {"learning": State.Learning, "review": State.Review,
+                "relearning": State.Relearning}
+_STATE_TO_DB = {State.Learning: "learning", State.Review: "review",
+                State.Relearning: "relearning"}
 
 # 判断题答案归一化后 → 统一布尔值
 _TRUE = {"对", "正确", "是", "true", "t", "1", "yes", "y"}
@@ -81,7 +96,63 @@ def judge_answer(correct_answer: str, user_answer: str,
 # --------------------------------------------------------------------------
 # 序列化
 # --------------------------------------------------------------------------
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _to_iso(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _from_iso(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if value.tzinfo is None:  # 库里的调度时间统一按 UTC 存
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _is_due(due_at: str | None) -> bool:
+    """契约 3.4：due_at <= now 或 due_at 为空 都算到期。"""
+    if not due_at:
+        return True
+    return str(due_at) <= _now_iso()
+
+
+def _schedule(record: dict, correct: bool) -> dict:
+    """按 FSRS 计算下一次复习时间（K4）。
+
+    答错映射 Again（很快再练），答对映射 Good（间隔拉长）；
+    返回值直接对应 wrong_questions 的六个调度字段。
+    """
+    card = Card(
+        state=_DB_TO_STATE.get(str(record.get("state") or "new"), State.Learning),
+        stability=float(record["stability"]) if record.get("stability") else None,
+        difficulty=float(record["difficulty"]) if record.get("difficulty") else None,
+        due=_from_iso(record.get("due_at")),
+        last_review=_from_iso(record.get("last_review_at")),
+    )
+    reviewed, _log = _SCHEDULER.review_card(
+        card, Rating.Good if correct else Rating.Again)
+    return {
+        "state": _STATE_TO_DB.get(reviewed.state, "learning"),
+        "stability": round(float(reviewed.stability or 0), 6),
+        "difficulty": round(float(reviewed.difficulty or 0), 6),
+        "due_at": _to_iso(reviewed.due),
+        "last_review_at": _now_iso(),
+    }
+
+
 def _row_to_out(row: dict) -> dict:
+    due_at = row.get("due_at") or None
     return {
         "wrong_id": int(row["wrong_id"]),
         "knowledge_name": row["knowledge_name"] or "",
@@ -97,6 +168,11 @@ def _row_to_out(row: dict) -> dict:
         "mastered": bool(row["mastered"]),
         "last_wrong_at": row["last_wrong_at"] or "",
         "created_at": row["created_at"] or "",
+        # v1.3.0 K4：调度字段（GET /api/wrong-questions 只加字段，不改结构）
+        "state": row.get("state") or "new",
+        "due_at": due_at,
+        "review_count": int(row.get("review_count") or 0),
+        "is_due": _is_due(due_at),
     }
 
 
@@ -184,6 +260,39 @@ def list_wrong_questions(
     return {"items": items, "weak_points": weak_points, "total": int(total)}
 
 
+def list_due_questions(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    """今日待复习队列（契约 3.4）。
+
+    - 只返回到期项：due_at 为空（尚未排期）或 due_at <= 现在；
+    - 排序：due_at 升序，空值优先；
+    - total 是到期项全量，不受 limit 影响。
+    """
+    now = _now_iso()
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM wrong_questions"
+        " WHERE user_id = :uid"
+        "   AND (due_at IS NULL OR due_at = '' OR due_at <= :now)",
+        {"uid": int(user_id), "now": now},
+    ).fetchone()["c"]
+
+    rows = conn.execute(
+        "SELECT * FROM wrong_questions"
+        " WHERE user_id = :uid"
+        "   AND (due_at IS NULL OR due_at = '' OR due_at <= :now)"
+        " ORDER BY (CASE WHEN due_at IS NULL OR due_at = '' THEN 0 ELSE 1 END),"
+        "          due_at ASC, wrong_id ASC"
+        " LIMIT :lim OFFSET :off",
+        {"uid": int(user_id), "now": now, "lim": int(limit), "off": int(offset)},
+    ).fetchall()
+    return {"items": [_row_to_out(dict(r)) for r in rows], "total": int(total)}
+
+
 def get_wrong_question(conn: sqlite3.Connection, user_id: int, wrong_id: int) -> dict | None:
     """错题详情；越权（不是自己的）一律返回 None，由路由层转 404。
 
@@ -223,9 +332,11 @@ def retry_wrong_question(conn: sqlite3.Connection, user_id: int,
                          wrong_id: int, answer: str) -> dict | None:
     """重做一题：判分 → 更新连对次数与掌握状态 → 返回结果。
 
-    规则（契约验收路径②）：
+    规则（契约验收路径② + v1.3.0 K4）：
       - 答对：correct_streak += 1；达到 MASTERY_THRESHOLD → mastered = 1。
       - 答错：correct_streak = 0，wrong_count += 1，mastered = 0，刷新 last_wrong_at。
+      - 两种情况都按 FSRS 重排下一次复习（state/stability/difficulty/due_at），
+        review_count += 1、last_review_at 刷新。
     判分与状态更新在一个事务里，原子完成。
     """
     with transaction(conn):
@@ -237,23 +348,36 @@ def retry_wrong_question(conn: sqlite3.Connection, user_id: int,
             return None
         rec = dict(row)
         correct = judge_answer(rec["correct_answer"], answer)
+        schedule = _schedule(rec, correct)
 
         if correct:
             new_streak = int(rec["correct_streak"] or 0) + 1
             mastered = 1 if new_streak >= MASTERY_THRESHOLD else int(rec["mastered"] or 0)
             # 答对不增加 wrong_count，也不刷新 last_wrong_at
             conn.execute(
-                "UPDATE wrong_questions SET correct_streak = :s, mastered = :m"
+                "UPDATE wrong_questions"
+                " SET correct_streak = :s, mastered = :m,"
+                "     state = :state, stability = :st, difficulty = :df,"
+                "     due_at = :due, review_count = review_count + 1,"
+                "     last_review_at = :lr"
                 " WHERE wrong_id = :wid",
-                {"s": new_streak, "m": mastered, "wid": int(wrong_id)},
+                {"s": new_streak, "m": mastered, "wid": int(wrong_id),
+                 "state": schedule["state"], "st": schedule["stability"],
+                 "df": schedule["difficulty"], "due": schedule["due_at"],
+                 "lr": schedule["last_review_at"]},
             )
         else:
             conn.execute(
                 "UPDATE wrong_questions"
                 " SET correct_streak = 0, mastered = 0,"
-                " wrong_count = wrong_count + 1, last_wrong_at = CURRENT_TIMESTAMP"
+                " wrong_count = wrong_count + 1, last_wrong_at = CURRENT_TIMESTAMP,"
+                " state = :state, stability = :st, difficulty = :df,"
+                " due_at = :due, review_count = review_count + 1,"
+                " last_review_at = :lr"
                 " WHERE wrong_id = :wid",
-                {"wid": int(wrong_id)},
+                {"wid": int(wrong_id), "state": schedule["state"],
+                 "st": schedule["stability"], "df": schedule["difficulty"],
+                 "due": schedule["due_at"], "lr": schedule["last_review_at"]},
             )
 
         fresh = conn.execute(
