@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "dataset_version": "beta-zl-20261126",
+  "owner": "章玲 102402101",
+  "kind": "self_authored_fixture",
+  "documents": 5,
+  "questions": 20,
+  "answerable": 15,
+  "insufficient": 2,
+  "not_covered": 3,
+  "knowledge_points": 20,
+  "notice": "小样本自编评测集，不是真实教师课件或已完成的模型评测。"
+}
